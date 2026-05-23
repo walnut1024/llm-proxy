@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 
@@ -98,6 +99,8 @@ export default async function init(opts) {
   }
 
   const toml = generateToml({ listenAddr, providers, bridges });
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   const s = p.spinner();
   s.start('Writing config...');

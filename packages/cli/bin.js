@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import os from 'node:os';
+import path from 'node:path';
 import { Command } from 'commander';
-import init from './commands/init.js';
-import start from './commands/start.js';
-import stop from './commands/stop.js';
-import status from './commands/status.js';
+
+const defaultConfig = path.join(os.homedir(), '.llm-proxy', 'proxy.toml');
 
 const program = new Command();
 
@@ -14,23 +14,35 @@ program
 
 program.command('init')
   .description('Generate proxy config interactively')
-  .option('-o, --output <path>', 'Output config file path', 'proxy.toml')
-  .action(init);
+  .option('-o, --output <path>', 'Output config file path', defaultConfig)
+  .action(async (opts) => {
+    const { default: init } = await import('./commands/init.js');
+    return init(opts);
+  });
 
 program.command('start')
   .description('Start the proxy')
-  .option('-c, --config <path>', 'Config file path', 'proxy.toml')
+  .option('-c, --config <path>', 'Config file path', defaultConfig)
   .option('--binary <path>', 'Path to llm-proxy binary')
   .option('-f, --foreground', 'Run in foreground')
-  .action(start);
+  .action(async (opts) => {
+    const { default: start } = await import('./commands/start.js');
+    return start(opts);
+  });
 
 program.command('stop')
   .description('Stop the proxy')
-  .action(stop);
+  .action(async () => {
+    const { default: stop } = await import('./commands/stop.js');
+    return stop();
+  });
 
 program.command('status')
   .description('Check proxy status')
-  .option('-c, --config <path>', 'Config file path', 'proxy.toml')
-  .action(status);
+  .option('-c, --config <path>', 'Config file path', defaultConfig)
+  .action(async (opts) => {
+    const { default: status } = await import('./commands/status.js');
+    return status(opts);
+  });
 
 program.parse();
