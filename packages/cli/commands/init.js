@@ -51,10 +51,18 @@ const i18n = {
     summaryListen: 'Listen:',
     summaryBridges: 'Bridges:',
     summaryProviders: 'Providers:',
-    writeConfirm: 'Write config?',
+    writeConfirm: 'What next?',
+    writeConfig: 'Write config',
     writing: 'Writing config...',
     written: (f) => `Written to ${f}`,
     startHint: 'Run llm-proxy start to start the proxy.',
+    editListen: 'Edit listen address',
+    editProvider: 'Edit provider',
+    editBridge: 'Edit bridge',
+    deleteProvider: 'Delete provider',
+    deleteBridge: 'Delete bridge',
+    deleted: (n) => `"${n}" deleted.`,
+    navCancel: 'Cancel',
   },
   cn: {
     langLabel: '中文',
@@ -103,10 +111,18 @@ const i18n = {
     summaryListen: '监听：',
     summaryBridges: 'Bridge：',
     summaryProviders: 'Provider：',
-    writeConfirm: '写入配置？',
+    writeConfirm: '下一步？',
+    writeConfig: '写入配置',
     writing: '正在写入配置...',
     written: (f) => `已写入 ${f}`,
     startHint: '运行 llm-proxy start 启动代理。',
+    editListen: '修改监听地址',
+    editProvider: '修改 Provider',
+    editBridge: '修改 Bridge',
+    deleteProvider: '删除 Provider',
+    deleteBridge: '删除 Bridge',
+    deleted: (n) => `"${n}" 已删除。`,
+    navCancel: '取消',
   },
 };
 
@@ -140,7 +156,6 @@ function cancel(v, t) {
 export default async function init(opts) {
   const outputPath = opts.output;
 
-  // Language selection
   const lang = cancel(await p.select({
     message: 'Language / 语言',
     options: [
@@ -164,125 +179,188 @@ export default async function init(opts) {
 
   p.intro(pc.bgCyan(pc.black(t.banner)));
 
-  const listenAddr = cancel(await p.text({
-    message: t.listenAddr,
-    initialValue: '127.0.0.1:8787',
-    validate: v => v.trim() ? undefined : t.required,
-  }), t);
+  const state = {
+    listenAddr: '127.0.0.1:8787',
+    providers: {},
+    bridges: {},
+  };
 
-  const providers = {};
-  const bridges = {};
+  // State machine: server → provider → bridge → loop → summary
+  let step = 'server';
 
-  p.log.step(t.providerStep);
-  await askProvider(providers, t, lang);
-
-  p.log.step(t.bridgeStep);
-  await askBridge(bridges, providers, t, lang);
-
-  while (true) {
-    const next = cancel(await p.select({
-      message: t.nextStep,
-      options: [
-        { value: 'bridge', label: t.addBridge },
-        { value: 'provider', label: t.addProviderBridge },
-        { value: 'done', label: t.doneWrite },
-      ],
-    }), t);
-
-    if (next === 'done') break;
-
-    if (next === 'provider') {
-      p.log.step(t.newProvider);
-      await askProvider(providers, t, lang);
+  while (step !== 'done') {
+    if (step === 'server') {
+      await runServer(state, t);
+      step = 'provider';
+      continue;
     }
 
-    p.log.step(t.newBridge);
-    await askBridge(bridges, providers, t, lang);
-  }
+    if (step === 'provider') {
+      await askProvider(state.providers, t, lang);
+      step = 'bridge';
+      continue;
+    }
 
-  // Summary
+    if (step.startsWith('provider:')) {
+      const name = step.slice('provider:'.length);
+      const existing = state.providers[name];
+      if (existing) {
+        delete state.providers[name];
+        await askProvider(state.providers, t, lang, { name, ...existing });
+      }
+      step = 'loop';
+      continue;
+    }
+
+    if (step === 'bridge') {
+      await askBridge(state.bridges, state.providers, t, lang);
+      step = 'loop';
+      continue;
+    }
+
+    if (step.startsWith('bridge:')) {
+      const name = step.slice('bridge:'.length);
+      const existing = state.bridges[name];
+      if (existing) {
+        delete state.bridges[name];
+        await askBridge(state.bridges, state.providers, t, lang, { name, ...existing });
+      }
+      step = 'loop';
+      continue;
+    }
+
+    if (step === 'loop') {
+      step = await runLoop(state, t, lang);
+      continue;
+    }
+
+    if (step === 'summary') {
+      step = await runSummary(state, t, lang, outputPath);
+      continue;
+    }
+  }
+}
+
+// ── Step: server ──────────────────────────────────────────────
+
+async function runServer(state, t) {
+  state.listenAddr = cancel(await p.text({
+    message: t.listenAddr,
+    initialValue: state.listenAddr,
+    validate: v => v.trim() ? undefined : t.required,
+  }), t);
+}
+
+// ── Step: loop (next step menu with back navigation) ─────────
+
+async function runLoop(state, t, lang) {
+  const options = [
+    { value: 'bridge', label: t.addBridge },
+    { value: 'provider', label: t.addProviderBridge },
+    ...buildEditNav(state, t),
+    { value: 'summary', label: t.doneWrite },
+  ];
+
+  const next = cancel(await p.select({
+    message: t.nextStep,
+    options,
+  }), t);
+
+  if (next.startsWith('edit:')) return next.slice(5);
+  if (next.startsWith('del_provider:')) {
+    const name = next.slice('del_provider:'.length);
+    delete state.providers[name];
+    p.log.success(t.deleted(name));
+    return 'loop';
+  }
+  if (next.startsWith('del_bridge:')) {
+    const name = next.slice('del_bridge:'.length);
+    delete state.bridges[name];
+    p.log.success(t.deleted(name));
+    return 'loop';
+  }
+  return next;
+}
+
+// ── Step: summary ─────────────────────────────────────────────
+
+async function runSummary(state, t, lang, outputPath) {
   const summary = [
-    `${pc.bold(t.summaryListen)}    ${listenAddr}`,
-    `${pc.bold(t.summaryBridges)}   ${Object.keys(bridges).length}`,
-    ...Object.entries(bridges).map(([name, b]) =>
+    `${pc.bold(t.summaryListen)}    ${state.listenAddr}`,
+    `${pc.bold(t.summaryBridges)}   ${Object.keys(state.bridges).length}`,
+    ...Object.entries(state.bridges).map(([name, b]) =>
       `  ${pc.cyan(name)} → ${b.provider.name}  (${Object.entries(b.models).map(([k, v]) => `${k}→${v}`).join(', ')})`
     ),
-    `${pc.bold(t.summaryProviders)} ${Object.keys(providers).length}`,
-    ...Object.keys(providers).map(k => `  ${pc.cyan(k)}`),
+    `${pc.bold(t.summaryProviders)} ${Object.keys(state.providers).length}`,
+    ...Object.keys(state.providers).map(k => `  ${pc.cyan(k)}`),
   ].join('\n');
 
   p.note(summary, t.summaryTitle);
 
-  const confirm_ = cancel(await p.confirm({
+  const options = [
+    { value: 'write', label: `✓ ${t.writeConfig}` },
+    ...buildEditNav(state, t),
+    { value: 'cancel', label: t.navCancel },
+  ];
+
+  const action = cancel(await p.select({
     message: t.writeConfirm,
-    initialValue: true,
+    options,
   }), t);
 
-  if (!confirm_) {
+  if (action === 'write') {
+    const toml = generateToml(state);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+    const s = p.spinner();
+    s.start(t.writing);
+    fs.writeFileSync(outputPath, toml);
+    s.stop(t.written(pc.cyan(outputPath)));
+
+    p.outro(t.startHint);
+    return 'done';
+  }
+
+  if (action === 'cancel') {
     p.cancel(t.aborted);
-    return;
+    return 'done';
   }
 
-  const toml = generateToml({ listenAddr, providers, bridges });
+  // Navigate to edit
+  if (action.startsWith('edit:')) return action.slice(5);
+  if (action.startsWith('del_provider:')) {
+    const name = action.slice('del_provider:'.length);
+    delete state.providers[name];
+    p.log.success(t.deleted(name));
+    return 'summary';
+  }
+  if (action.startsWith('del_bridge:')) {
+    const name = action.slice('del_bridge:'.length);
+    delete state.bridges[name];
+    p.log.success(t.deleted(name));
+    return 'summary';
+  }
 
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-
-  const s = p.spinner();
-  s.start(t.writing);
-  fs.writeFileSync(outputPath, toml);
-  s.stop(t.written(pc.cyan(outputPath)));
-
-  p.outro(t.startHint);
+  return action;
 }
 
-async function askProvider(providers, t, lang) {
-  const presets = getProviderPresets(lang);
-  const choice = cancel(await p.select({
-    message: t.selectProvider,
-    options: presets,
-  }), t);
+// ── Navigation helpers ────────────────────────────────────────
 
-  let name, config;
-
-  if (choice === '__custom__') {
-    name = cancel(await p.text({
-      message: t.providerName,
-      placeholder: t.providerNamePh,
-      validate: v => v.trim() ? undefined : t.required,
-    }), t);
-
-    const baseUrl = cancel(await p.text({
-      message: t.providerUrl,
-      placeholder: t.providerUrlPh,
-      validate: v => v.startsWith('http') ? undefined : t.urlRequired,
-    }), t);
-
-    const apiFormat = cancel(await p.select({
-      message: t.providerFormat,
-      options: API_FORMATS[lang],
-    }), t);
-
-    const apiKeyEnv = cancel(await p.text({
-      message: t.apiKeyEnv,
-      placeholder: t.apiKeyEnvPh,
-      validate: v => v.trim() ? undefined : t.required,
-    }), t);
-
-    config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
-  } else {
-    const preset = presets.find(p => p.value === choice);
-    name = choice;
-    config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
+function buildEditNav(state, t) {
+  const nav = [];
+  nav.push({ value: 'edit:server', label: `← ${t.editListen}` });
+  for (const name of Object.keys(state.providers)) {
+    nav.push({ value: `edit:provider:${name}`, label: `← ${t.editProvider}: ${name}` });
+    nav.push({ value: `del_provider:${name}`, label: `  ${t.deleteProvider}: ${name}` });
   }
-
-  if (providers[name]) {
-    p.log.warn(t.providerExists(name));
-    return;
+  for (const name of Object.keys(state.bridges)) {
+    nav.push({ value: `edit:bridge:${name}`, label: `← ${t.editBridge}: ${name}` });
+    nav.push({ value: `del_bridge:${name}`, label: `  ${t.deleteBridge}: ${name}` });
   }
-
-  providers[name] = config;
-  p.log.success(t.providerDone(pc.cyan(name)));
+  return nav;
 }
+
+// ── Provider ──────────────────────────────────────────────────
 
 function getProviderPresets(lang) {
   const custom = lang === 'cn' ? '自定义 Provider...' : 'Custom provider...';
@@ -294,22 +372,82 @@ function getProviderPresets(lang) {
   ];
 }
 
-async function askBridge(bridges, providers, t, lang) {
+async function askProvider(providers, t, lang, existing = null) {
+  const presets = getProviderPresets(lang);
+
+  const choice = cancel(await p.select({
+    message: t.selectProvider,
+    options: presets,
+    initialValue: existing ? presets.findIndex(p => p.value === existing.name) : undefined,
+  }), t);
+
+  let name, config;
+
+  if (choice === '__custom__') {
+    name = cancel(await p.text({
+      message: t.providerName,
+      placeholder: t.providerNamePh,
+      initialValue: existing && !presets.find(p => p.value === existing.name) ? existing.name : undefined,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
+
+    const baseUrl = cancel(await p.text({
+      message: t.providerUrl,
+      placeholder: t.providerUrlPh,
+      initialValue: existing ? existing.base_url : undefined,
+      validate: v => v.startsWith('http') ? undefined : t.urlRequired,
+    }), t);
+
+    const apiFormat = cancel(await p.select({
+      message: t.providerFormat,
+      options: API_FORMATS[lang],
+      initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.api_format) : undefined,
+    }), t);
+
+    const apiKeyEnv = cancel(await p.text({
+      message: t.apiKeyEnv,
+      placeholder: t.apiKeyEnvPh,
+      initialValue: existing ? existing.api_key_env : undefined,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
+
+    config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
+  } else {
+    const preset = presets.find(p => p.value === choice);
+    name = choice;
+    config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
+  }
+
+  if (providers[name] && name !== existing?.name) {
+    p.log.warn(t.providerExists(name));
+    return;
+  }
+
+  providers[name] = config;
+  p.log.success(t.providerDone(pc.cyan(name)));
+}
+
+// ── Bridge ────────────────────────────────────────────────────
+
+async function askBridge(bridges, providers, t, lang, existing = null) {
   const name = cancel(await p.text({
     message: t.bridgeName,
     placeholder: t.bridgeNamePh,
+    initialValue: existing ? existing.name : undefined,
     validate: v => v.trim() ? undefined : t.required,
   }), t);
 
   const baseUrl = cancel(await p.text({
     message: t.agentUrl,
     placeholder: t.agentUrlPh,
+    initialValue: existing ? existing.agent.base_url : undefined,
     validate: v => v.startsWith('/') ? undefined : t.agentUrlRequired,
   }), t);
 
   const agentFormat = cancel(await p.select({
     message: t.agentFormat,
     options: API_FORMATS[lang],
+    initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.agent.api_format) : undefined,
   }), t);
 
   const providerFormat = PROVIDER_FORMAT_MAP[agentFormat];
@@ -324,6 +462,7 @@ async function askBridge(bridges, providers, t, lang) {
     providerName = cancel(await p.select({
       message: t.selectBridgeProvider,
       options: providerOpts,
+      initialValue: existing ? providerOpts.findIndex(o => o.value === existing.provider.name) : undefined,
     }), t);
   } else {
     p.log.warn(t.noProvider(providerFormat));
@@ -334,7 +473,17 @@ async function askBridge(bridges, providers, t, lang) {
   // Model mappings
   p.log.message(t.modelMappings);
 
-  const models = {};
+  const models = existing ? { ...existing.models } : {};
+  if (Object.keys(models).length > 0) {
+    const keepModels = cancel(await p.confirm({
+      message: `Keep existing ${Object.keys(models).length} model mapping(s)?`,
+      initialValue: true,
+    }), t);
+    if (!keepModels) {
+      Object.keys(models).forEach(k => delete models[k]);
+    }
+  }
+
   while (true) {
     const agentModel = cancel(await p.text({
       message: t.clientModel,
@@ -365,6 +514,8 @@ async function askBridge(bridges, providers, t, lang) {
 
   p.log.success(t.bridgeDone(pc.cyan(name), Object.keys(models).join(', ')));
 }
+
+// ── TOML generation ───────────────────────────────────────────
 
 function generateToml({ listenAddr, providers, bridges }) {
   let out = '';
