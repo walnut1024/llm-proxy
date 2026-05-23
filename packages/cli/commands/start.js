@@ -2,21 +2,31 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
+import * as p from '@clack/prompts';
+import pc from 'picocolors';
+
+function cancel(v) {
+  if (p.isCancel(v)) {
+    p.cancel('Aborted');
+    process.exit(0);
+  }
+  return v;
+}
 
 export default async function start(opts) {
   const configPath = path.resolve(opts.config);
 
   if (!fs.existsSync(configPath)) {
-    console.error(`Config not found: ${configPath}`);
-    console.error('Run `llm-proxy init` to generate one.');
+    p.log.error(`Config not found: ${pc.red(configPath)}`);
+    p.log.info(`Run ${pc.cyan('llm-proxy init')} to generate one.`);
     process.exit(1);
   }
 
   const binaryPath = opts.binary || findBinary();
   if (!binaryPath) {
-    console.error('llm-proxy binary not found.');
-    console.error('Build it with: cargo build --release');
-    console.error('Or specify path with: --binary /path/to/llm-proxy');
+    p.log.error('llm-proxy binary not found.');
+    p.log.info(`Build: ${pc.cyan('cd packages/core && cargo build --release')}`);
+    p.log.info(`Or specify: ${pc.cyan('--binary /path/to/llm-proxy')}`);
     process.exit(1);
   }
 
@@ -28,10 +38,14 @@ export default async function start(opts) {
 }
 
 function startForeground(binaryPath, configPath) {
+  p.intro(pc.bgCyan(pc.black(' llm-proxy ')));
+  p.log.info(`Config: ${pc.cyan(configPath)}`);
+  p.log.info('Press Ctrl+C to stop.');
+
   const child = spawn(binaryPath, [configPath], { stdio: 'inherit' });
 
   child.on('error', (err) => {
-    console.error('Failed to start:', err.message);
+    p.log.error(`Failed to start: ${err.message}`);
     process.exit(1);
   });
 
@@ -53,29 +67,42 @@ function startDaemon(binaryPath, configPath) {
   });
 
   child.on('error', (err) => {
-    console.error('Failed to start:', err.message);
+    p.log.error(`Failed to start: ${err.message}`);
     process.exit(1);
   });
 
   child.unref();
 
-  // Give it a moment to start, then check if still alive
+  const s = p.spinner();
+  s.start('Starting proxy...');
+
   setTimeout(() => {
     try {
       process.kill(child.pid, 0);
-      console.log(`Proxy started (pid: ${child.pid})`);
-      console.log(`Config: ${configPath}`);
-      console.log(`Log:    ${logPath}`);
+      s.stop('Proxy started');
+
+      p.note(
+        [
+          `${pc.bold('PID:')}     ${child.pid}`,
+          `${pc.bold('Config:')}  ${configPath}`,
+          `${pc.bold('Log:')}     ${logPath}`,
+        ].join('\n'),
+        'Proxy running'
+      );
+
+      p.outro(`Run ${pc.cyan('llm-proxy stop')} to stop.`);
     } catch {
-      console.error('Proxy exited immediately. Check log:', logPath);
+      s.stop('Proxy exited unexpectedly');
+      p.log.error(`Check log: ${pc.red(logPath)}`);
       process.exit(1);
     }
   }, 500);
 }
 
 function findBinary() {
-  // 1. Adjacent: ../core/target/release/llm-proxy
   const cliDir = path.dirname(import.meta.dirname || new URL('.', import.meta.url).pathname);
+
+  // 1. Adjacent: ../core/target/release/llm-proxy
   const localBuild = path.resolve(cliDir, '..', 'core', 'target', 'release', 'llm-proxy');
   if (fs.existsSync(localBuild)) return localBuild;
 

@@ -1,11 +1,11 @@
 import fs from 'node:fs';
-import path from 'node:path';
-import inquirer from 'inquirer';
+import * as p from '@clack/prompts';
+import pc from 'picocolors';
 
 const API_FORMATS = [
-  { name: 'Anthropic Messages (Claude Desktop, Claude Code)', value: 'anthropic_messages' },
-  { name: 'Chat Completions (OpenAI compatible)', value: 'chat_completions' },
-  { name: 'Responses API (Codex TUI)', value: 'responses' },
+  { value: 'anthropic_messages', label: 'Anthropic Messages (Claude Desktop / Claude Code)' },
+  { value: 'chat_completions', label: 'Chat Completions (OpenAI compatible)' },
+  { value: 'responses', label: 'Responses API (Codex TUI)' },
 ];
 
 const PROVIDER_FORMAT_MAP = {
@@ -14,181 +14,202 @@ const PROVIDER_FORMAT_MAP = {
   chat_completions: 'chat_completions',
 };
 
+function cancel(v) {
+  if (p.isCancel(v)) {
+    p.cancel('Aborted');
+    process.exit(0);
+  }
+  return v;
+}
+
 export default async function init(opts) {
   const outputPath = opts.output;
 
   if (fs.existsSync(outputPath)) {
-    const { overwrite } = await inquirer.prompt([{
-      type: 'confirm',
-      name: 'overwrite',
+    const overwrite = cancel(await p.confirm({
       message: `${outputPath} already exists. Overwrite?`,
-      default: false,
-    }]);
+      initialValue: false,
+    }));
     if (!overwrite) {
-      console.log('Aborted.');
+      p.cancel('Aborted');
       return;
     }
   }
 
-  const { listenAddr } = await inquirer.prompt([{
-    type: 'input',
-    name: 'listenAddr',
+  p.intro(pc.bgCyan(pc.black(' llm-proxy config ')));
+
+  const listenAddr = cancel(await p.text({
     message: 'Listen address',
-    default: '127.0.0.1:8787',
-  }]);
+    initialValue: '127.0.0.1:8787',
+    validate: v => v.trim() ? undefined : 'Required',
+  }));
 
   const providers = {};
   const bridges = {};
 
-  let addBridge = true;
-  while (addBridge) {
-    const bridge = await askBridge(Object.keys(providers));
-    bridges[bridge.name] = bridge.config;
-    if (!providers[bridge.providerName]) {
-      providers[bridge.providerName] = bridge.providerConfig;
+  p.log.step('Provider configuration');
+  await askProvider(providers);
+
+  p.log.step('Bridge configuration');
+  await askBridge(bridges, providers);
+
+  while (true) {
+    const next = cancel(await p.select({
+      message: 'Next step',
+      options: [
+        { value: 'bridge', label: 'Add another bridge' },
+        { value: 'provider', label: 'Add provider + bridge' },
+        { value: 'done', label: 'Done — write config' },
+      ],
+    }));
+
+    if (next === 'done') break;
+
+    if (next === 'provider') {
+      p.log.step('New provider');
+      await askProvider(providers);
     }
 
-    const { more } = await inquirer.prompt([{
-      type: 'confirm',
-      name: 'more',
-      message: 'Add another bridge?',
-      default: false,
-    }]);
-    addBridge = more;
+    p.log.step('New bridge');
+    await askBridge(bridges, providers);
+  }
+
+  // Summary
+  const summary = [
+    `${pc.bold('Listen:')}    ${listenAddr}`,
+    `${pc.bold('Bridges:')}   ${Object.keys(bridges).length}`,
+    ...Object.entries(bridges).map(([name, b]) =>
+      `  ${pc.cyan(name)} → ${b.provider.name}  (${Object.entries(b.models).map(([k, v]) => `${k}→${v}`).join(', ')})`
+    ),
+    `${pc.bold('Providers:')} ${Object.keys(providers).length}`,
+    ...Object.keys(providers).map(k => `  ${pc.cyan(k)}`),
+  ].join('\n');
+
+  p.note(summary, 'Config summary');
+
+  const confirm = cancel(await p.confirm({
+    message: 'Write config?',
+    initialValue: true,
+  }));
+
+  if (!confirm) {
+    p.cancel('Aborted');
+    return;
   }
 
   const toml = generateToml({ listenAddr, providers, bridges });
+
+  const s = p.spinner();
+  s.start('Writing config...');
   fs.writeFileSync(outputPath, toml);
-  console.log(`\nConfig written to ${outputPath}`);
-  console.log('Run `llm-proxy start` to start the proxy.');
+  s.stop(`Written to ${pc.cyan(outputPath)}`);
+
+  p.outro(`Run ${pc.cyan('llm-proxy start')} to start the proxy.`);
 }
 
-async function askBridge(existingProviders) {
-  const { name } = await inquirer.prompt([{
-    type: 'input',
-    name: 'name',
-    message: 'Bridge name (e.g. deepseek, codex):',
-    validate: v => v.trim() ? true : 'Required',
-  }]);
+async function askProvider(providers) {
+  const name = cancel(await p.text({
+    message: 'Provider name',
+    placeholder: 'e.g. deepseek_anthropic',
+    validate: v => v.trim() ? undefined : 'Required',
+  }));
 
-  const { baseUrl } = await inquirer.prompt([{
-    type: 'input',
-    name: 'baseUrl',
-    message: 'Agent base URL path (e.g. /deepseek):',
-    validate: v => v.startsWith('/') ? true : 'Must start with /',
-  }]);
+  if (providers[name]) {
+    p.log.warn(`Provider "${name}" already exists, skipping.`);
+    return;
+  }
 
-  const { agentFormat } = await inquirer.prompt([{
-    type: 'list',
-    name: 'agentFormat',
-    message: 'Client API format:',
-    choices: API_FORMATS,
-  }]);
+  const baseUrl = cancel(await p.text({
+    message: 'Provider base URL',
+    placeholder: 'e.g. https://api.deepseek.com/anthropic',
+    validate: v => v.startsWith('http') ? undefined : 'Must start with http(s)://',
+  }));
+
+  const apiFormat = cancel(await p.select({
+    message: 'Provider API format',
+    options: API_FORMATS,
+  }));
+
+  const apiKeyEnv = cancel(await p.text({
+    message: 'API key environment variable',
+    placeholder: 'e.g. DEEPSEEK_API_KEY',
+    validate: v => v.trim() ? undefined : 'Required',
+  }));
+
+  providers[name] = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
+  p.log.success(`Provider "${pc.cyan(name)}" configured.`);
+}
+
+async function askBridge(bridges, providers) {
+  const name = cancel(await p.text({
+    message: 'Bridge name',
+    placeholder: 'e.g. deepseek, codex',
+    validate: v => v.trim() ? undefined : 'Required',
+  }));
+
+  const baseUrl = cancel(await p.text({
+    message: 'Agent base URL path',
+    placeholder: 'e.g. /deepseek',
+    validate: v => v.startsWith('/') ? undefined : 'Must start with /',
+  }));
+
+  const agentFormat = cancel(await p.select({
+    message: 'Client API format',
+    options: API_FORMATS,
+  }));
 
   const providerFormat = PROVIDER_FORMAT_MAP[agentFormat];
+  p.log.info(`Provider format: ${pc.yellow(providerFormat)}`);
+
+  const providerOpts = Object.entries(providers)
+    .filter(([, v]) => v.api_format === providerFormat)
+    .map(([k]) => ({ value: k, label: k }));
 
   let providerName;
-  let providerConfig;
-
-  if (existingProviders.length > 0) {
-    const { providerChoice } = await inquirer.prompt([{
-      type: 'list',
-      name: 'providerChoice',
-      message: 'Select provider:',
-      choices: [
-        ...existingProviders.map(p => ({ name: p, value: p })),
-        { name: '(create new provider)', value: '__new__' },
-      ],
-    }]);
-
-    if (providerChoice !== '__new__') {
-      providerName = providerChoice;
-      const { models } = await askModels();
-      return { name, config: buildBridgeConfig(baseUrl, agentFormat, providerName, models), providerName, providerConfig: null };
-    }
+  if (providerOpts.length > 0) {
+    providerName = cancel(await p.select({
+      message: 'Select provider',
+      options: providerOpts,
+    }));
+  } else {
+    p.log.warn(`No ${providerFormat} provider found. Add one first.`);
+    await askProvider(providers);
+    providerName = Object.keys(providers).find(k => providers[k].api_format === providerFormat);
   }
 
-  const provider = await askProvider(providerFormat);
-  providerName = provider.name;
-  providerConfig = provider.config;
+  // Model mappings
+  p.log.message('Model mappings (client model → provider model):');
 
-  const { models } = await askModels();
-  return { name, config: buildBridgeConfig(baseUrl, agentFormat, providerName, models), providerName, providerConfig };
-}
-
-async function askProvider(defaultFormat) {
-  const { name, baseUrl, apiKeyEnv } = await inquirer.prompt([
-    {
-      type: 'input',
-      name: 'name',
-      message: 'Provider name (e.g. deepseek_anthropic):',
-      validate: v => v.trim() ? true : 'Required',
-    },
-    {
-      type: 'input',
-      name: 'baseUrl',
-      message: 'Provider base URL (e.g. https://api.deepseek.com):',
-      validate: v => v.startsWith('http') ? true : 'Must be a URL',
-    },
-    {
-      type: 'input',
-      name: 'apiKeyEnv',
-      message: 'API key environment variable name:',
-      validate: v => v.trim() ? true : 'Required',
-    },
-  ]);
-
-  return {
-    name,
-    config: {
-      base_url: baseUrl,
-      api_format: defaultFormat,
-      api_key_env: apiKeyEnv,
-    },
-  };
-}
-
-async function askModels() {
   const models = {};
-  let addModel = true;
+  while (true) {
+    const agentModel = cancel(await p.text({
+      message: 'Client model name',
+      placeholder: 'e.g. claude-sonnet',
+      validate: v => v.trim() ? undefined : 'Required',
+    }));
 
-  console.log('\nModel mappings (client model name -> provider model name):');
+    const providerModel = cancel(await p.text({
+      message: `Provider model name for "${agentModel}"`,
+      placeholder: 'e.g. deepseek-v4-pro',
+      validate: v => v.trim() ? undefined : 'Required',
+    }));
 
-  while (addModel) {
-    const { agentModel, providerModel } = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'agentModel',
-        message: 'Client model name (e.g. claude-sonnet):',
-        validate: v => v.trim() ? true : 'Required',
-      },
-      {
-        type: 'input',
-        name: 'providerModel',
-        message: 'Provider model name (e.g. deepseek-v4-pro):',
-        validate: v => v.trim() ? true : 'Required',
-      },
-    ]);
     models[agentModel] = providerModel;
 
-    const { more } = await inquirer.prompt([{
-      type: 'confirm',
-      name: 'more',
+    const addMore = cancel(await p.confirm({
       message: 'Add another model mapping?',
-      default: true,
-    }]);
-    addModel = more;
+      initialValue: true,
+    }));
+    if (!addMore) break;
   }
 
-  return { models };
-}
-
-function buildBridgeConfig(baseUrl, agentFormat, providerName, models) {
-  return {
+  bridges[name] = {
     agent: { base_url: baseUrl, api_format: agentFormat },
     provider: { name: providerName },
     models,
   };
+
+  p.log.success(`Bridge "${pc.cyan(name)}" configured (${Object.keys(models).join(', ')}).`);
 }
 
 function generateToml({ listenAddr, providers, bridges }) {
