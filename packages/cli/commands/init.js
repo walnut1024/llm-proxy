@@ -3,11 +3,125 @@ import path from 'node:path';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 
-const API_FORMATS = [
-  { value: 'anthropic_messages', label: 'Anthropic Messages (Claude Desktop / Claude Code)' },
-  { value: 'chat_completions', label: 'Chat Completions (OpenAI compatible)' },
-  { value: 'responses', label: 'Responses API (Codex TUI)' },
-];
+const i18n = {
+  en: {
+    langLabel: 'English',
+    banner: ' llm-proxy config ',
+    overwrite: (f) => `${f} already exists. Overwrite?`,
+    aborted: 'Aborted',
+    listenAddr: 'Listen address',
+    required: 'Required',
+    providerStep: 'Provider configuration',
+    selectProvider: 'Select provider',
+    customProvider: 'Custom provider...',
+    providerName: 'Provider name',
+    providerNamePh: 'e.g. my_provider',
+    providerUrl: 'Provider base URL',
+    providerUrlPh: 'e.g. https://api.example.com/v1',
+    urlRequired: 'Must start with http(s)://',
+    providerFormat: 'Provider API format',
+    apiKeyEnv: 'API key environment variable',
+    apiKeyEnvPh: 'e.g. MY_API_KEY',
+    providerExists: (n) => `Provider "${n}" already exists, skipping.`,
+    providerDone: (n) => `Provider "${n}" configured.`,
+    bridgeStep: 'Bridge configuration',
+    newProvider: 'New provider',
+    newBridge: 'New bridge',
+    bridgeName: 'Bridge name',
+    bridgeNamePh: 'e.g. deepseek, codex',
+    agentUrl: 'Agent base URL path',
+    agentUrlPh: 'e.g. /deepseek',
+    agentUrlRequired: 'Must start with /',
+    agentFormat: 'Client API format',
+    providerFormatInfo: (f) => `Provider format: ${f}`,
+    selectBridgeProvider: 'Select provider',
+    noProvider: (f) => `No ${f} provider found. Add one first.`,
+    modelMappings: 'Model mappings (client model → provider model):',
+    clientModel: 'Client model name',
+    clientModelPh: 'e.g. claude-sonnet',
+    providerModel: (m) => `Provider model name for "${m}"`,
+    providerModelPh: 'e.g. deepseek-v4-pro',
+    addModel: 'Add another model mapping?',
+    bridgeDone: (n, models) => `Bridge "${n}" configured (${models}).`,
+    nextStep: 'Next step',
+    addBridge: 'Add another bridge',
+    addProviderBridge: 'Add provider + bridge',
+    doneWrite: 'Done — write config',
+    summaryTitle: 'Config summary',
+    summaryListen: 'Listen:',
+    summaryBridges: 'Bridges:',
+    summaryProviders: 'Providers:',
+    writeConfirm: 'Write config?',
+    writing: 'Writing config...',
+    written: (f) => `Written to ${f}`,
+    startHint: 'Run llm-proxy start to start the proxy.',
+  },
+  cn: {
+    langLabel: '中文',
+    banner: ' llm-proxy 配置 ',
+    overwrite: (f) => `${f} 已存在，是否覆盖？`,
+    aborted: '已取消',
+    listenAddr: '监听地址',
+    required: '必填',
+    providerStep: 'Provider 配置',
+    selectProvider: '选择 Provider',
+    customProvider: '自定义 Provider...',
+    providerName: 'Provider 名称',
+    providerNamePh: '例如 my_provider',
+    providerUrl: 'Provider API 地址',
+    providerUrlPh: '例如 https://api.example.com/v1',
+    urlRequired: '必须以 http(s):// 开头',
+    providerFormat: 'Provider API 格式',
+    apiKeyEnv: 'API Key 环境变量名',
+    apiKeyEnvPh: '例如 MY_API_KEY',
+    providerExists: (n) => `Provider "${n}" 已存在，跳过。`,
+    providerDone: (n) => `Provider "${n}" 已配置。`,
+    bridgeStep: 'Bridge 配置',
+    newProvider: '新建 Provider',
+    newBridge: '新建 Bridge',
+    bridgeName: 'Bridge 名称',
+    bridgeNamePh: '例如 deepseek、codex',
+    agentUrl: 'Agent URL 路径',
+    agentUrlPh: '例如 /deepseek',
+    agentUrlRequired: '必须以 / 开头',
+    agentFormat: '客户端 API 格式',
+    providerFormatInfo: (f) => `Provider 格式: ${f}`,
+    selectBridgeProvider: '选择 Provider',
+    noProvider: (f) => `未找到 ${f} 格式的 Provider，请先添加。`,
+    modelMappings: '模型映射（客户端模型 → Provider 模型）：',
+    clientModel: '客户端模型名',
+    clientModelPh: '例如 claude-sonnet',
+    providerModel: (m) => `"${m}" 对应的 Provider 模型名`,
+    providerModelPh: '例如 deepseek-v4-pro',
+    addModel: '继续添加模型映射？',
+    bridgeDone: (n, models) => `Bridge "${n}" 已配置 (${models})。`,
+    nextStep: '下一步',
+    addBridge: '添加另一个 Bridge',
+    addProviderBridge: '添加 Provider + Bridge',
+    doneWrite: '完成 — 写入配置',
+    summaryTitle: '配置预览',
+    summaryListen: '监听：',
+    summaryBridges: 'Bridge：',
+    summaryProviders: 'Provider：',
+    writeConfirm: '写入配置？',
+    writing: '正在写入配置...',
+    written: (f) => `已写入 ${f}`,
+    startHint: '运行 llm-proxy start 启动代理。',
+  },
+};
+
+const API_FORMATS = {
+  en: [
+    { value: 'anthropic_messages', label: 'Anthropic Messages (Claude Desktop / Claude Code)' },
+    { value: 'chat_completions', label: 'Chat Completions (OpenAI compatible)' },
+    { value: 'responses', label: 'Responses API (Codex TUI)' },
+  ],
+  cn: [
+    { value: 'anthropic_messages', label: 'Anthropic Messages（Claude Desktop / Claude Code）' },
+    { value: 'chat_completions', label: 'Chat Completions（OpenAI 兼容）' },
+    { value: 'responses', label: 'Responses API（Codex TUI）' },
+  ],
+};
 
 const PROVIDER_FORMAT_MAP = {
   anthropic_messages: 'anthropic_messages',
@@ -15,9 +129,9 @@ const PROVIDER_FORMAT_MAP = {
   chat_completions: 'chat_completions',
 };
 
-function cancel(v) {
+function cancel(v, t) {
   if (p.isCancel(v)) {
-    p.cancel('Aborted');
+    p.cancel(t.aborted);
     process.exit(0);
   }
   return v;
@@ -26,75 +140,86 @@ function cancel(v) {
 export default async function init(opts) {
   const outputPath = opts.output;
 
+  // Language selection
+  const lang = cancel(await p.select({
+    message: 'Language / 语言',
+    options: [
+      { value: 'en', label: 'English' },
+      { value: 'cn', label: '中文' },
+    ],
+  }), i18n.en);
+
+  const t = i18n[lang];
+
   if (fs.existsSync(outputPath)) {
     const overwrite = cancel(await p.confirm({
-      message: `${outputPath} already exists. Overwrite?`,
+      message: t.overwrite(outputPath),
       initialValue: false,
-    }));
+    }), t);
     if (!overwrite) {
-      p.cancel('Aborted');
+      p.cancel(t.aborted);
       return;
     }
   }
 
-  p.intro(pc.bgCyan(pc.black(' llm-proxy config ')));
+  p.intro(pc.bgCyan(pc.black(t.banner)));
 
   const listenAddr = cancel(await p.text({
-    message: 'Listen address',
+    message: t.listenAddr,
     initialValue: '127.0.0.1:8787',
-    validate: v => v.trim() ? undefined : 'Required',
-  }));
+    validate: v => v.trim() ? undefined : t.required,
+  }), t);
 
   const providers = {};
   const bridges = {};
 
-  p.log.step('Provider configuration');
-  await askProvider(providers);
+  p.log.step(t.providerStep);
+  await askProvider(providers, t, lang);
 
-  p.log.step('Bridge configuration');
-  await askBridge(bridges, providers);
+  p.log.step(t.bridgeStep);
+  await askBridge(bridges, providers, t, lang);
 
   while (true) {
     const next = cancel(await p.select({
-      message: 'Next step',
+      message: t.nextStep,
       options: [
-        { value: 'bridge', label: 'Add another bridge' },
-        { value: 'provider', label: 'Add provider + bridge' },
-        { value: 'done', label: 'Done — write config' },
+        { value: 'bridge', label: t.addBridge },
+        { value: 'provider', label: t.addProviderBridge },
+        { value: 'done', label: t.doneWrite },
       ],
-    }));
+    }), t);
 
     if (next === 'done') break;
 
     if (next === 'provider') {
-      p.log.step('New provider');
-      await askProvider(providers);
+      p.log.step(t.newProvider);
+      await askProvider(providers, t, lang);
     }
 
-    p.log.step('New bridge');
-    await askBridge(bridges, providers);
+    p.log.step(t.newBridge);
+    await askBridge(bridges, providers, t, lang);
   }
 
   // Summary
   const summary = [
-    `${pc.bold('Listen:')}    ${listenAddr}`,
-    `${pc.bold('Bridges:')}   ${Object.keys(bridges).length}`,
+    `${pc.bold(t.summaryListen)}    ${listenAddr}`,
+    `${pc.bold(t.summaryBridges)}   ${Object.keys(bridges).length}`,
     ...Object.entries(bridges).map(([name, b]) =>
       `  ${pc.cyan(name)} → ${b.provider.name}  (${Object.entries(b.models).map(([k, v]) => `${k}→${v}`).join(', ')})`
     ),
-    `${pc.bold('Providers:')} ${Object.keys(providers).length}`,
+    `${pc.bold(t.summaryProviders)} ${Object.keys(providers).length}`,
     ...Object.keys(providers).map(k => `  ${pc.cyan(k)}`),
   ].join('\n');
 
-  p.note(summary, 'Config summary');
+  p.note(summary, t.summaryTitle);
 
-  const confirm = cancel(await p.confirm({
-    message: 'Write config?',
+  const confirm_ = cancel(await p.confirm({
+    message: t.writeConfirm,
     initialValue: true,
-  }));
+  }), t);
 
-  if (!confirm) {
-    p.cancel('Aborted');
+  if (!confirm_) {
+    p.cancel(t.aborted);
     return;
   }
 
@@ -103,88 +228,92 @@ export default async function init(opts) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   const s = p.spinner();
-  s.start('Writing config...');
+  s.start(t.writing);
   fs.writeFileSync(outputPath, toml);
-  s.stop(`Written to ${pc.cyan(outputPath)}`);
+  s.stop(t.written(pc.cyan(outputPath)));
 
-  p.outro(`Run ${pc.cyan('llm-proxy start')} to start the proxy.`);
+  p.outro(t.startHint);
 }
 
-const PROVIDER_PRESETS = [
-  { value: 'deepseek_anthropic', label: 'DeepSeek (Anthropic)', base_url: 'https://api.deepseek.com/anthropic', api_format: 'anthropic_messages', api_key_env: 'DEEPSEEK_API_KEY' },
-  { value: 'deepseek_chat', label: 'DeepSeek (Chat Completions)', base_url: 'https://api.deepseek.com', api_format: 'chat_completions', api_key_env: 'DEEPSEEK_API_KEY' },
-  { value: 'glm_anthropic', label: 'GLM / Zhipu (Anthropic)', base_url: 'https://open.bigmodel.cn/api/anthropic', api_format: 'anthropic_messages', api_key_env: 'ZHIPU_API_KEY' },
-  { value: '__custom__', label: 'Custom provider...' },
-];
-
-async function askProvider(providers) {
+async function askProvider(providers, t, lang) {
+  const presets = getProviderPresets(lang);
   const choice = cancel(await p.select({
-    message: 'Select provider',
-    options: PROVIDER_PRESETS,
-  }));
+    message: t.selectProvider,
+    options: presets,
+  }), t);
 
   let name, config;
 
   if (choice === '__custom__') {
     name = cancel(await p.text({
-      message: 'Provider name',
-      placeholder: 'e.g. my_provider',
-      validate: v => v.trim() ? undefined : 'Required',
-    }));
+      message: t.providerName,
+      placeholder: t.providerNamePh,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
 
     const baseUrl = cancel(await p.text({
-      message: 'Provider base URL',
-      placeholder: 'e.g. https://api.example.com/v1',
-      validate: v => v.startsWith('http') ? undefined : 'Must start with http(s)://',
-    }));
+      message: t.providerUrl,
+      placeholder: t.providerUrlPh,
+      validate: v => v.startsWith('http') ? undefined : t.urlRequired,
+    }), t);
 
     const apiFormat = cancel(await p.select({
-      message: 'Provider API format',
-      options: API_FORMATS,
-    }));
+      message: t.providerFormat,
+      options: API_FORMATS[lang],
+    }), t);
 
     const apiKeyEnv = cancel(await p.text({
-      message: 'API key environment variable',
-      placeholder: 'e.g. MY_API_KEY',
-      validate: v => v.trim() ? undefined : 'Required',
-    }));
+      message: t.apiKeyEnv,
+      placeholder: t.apiKeyEnvPh,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
 
     config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
   } else {
-    const preset = PROVIDER_PRESETS.find(p => p.value === choice);
+    const preset = presets.find(p => p.value === choice);
     name = choice;
     config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
   }
 
   if (providers[name]) {
-    p.log.warn(`Provider "${name}" already exists, skipping.`);
+    p.log.warn(t.providerExists(name));
     return;
   }
 
   providers[name] = config;
-  p.log.success(`Provider "${pc.cyan(name)}" configured.`);
+  p.log.success(t.providerDone(pc.cyan(name)));
 }
 
-async function askBridge(bridges, providers) {
+function getProviderPresets(lang) {
+  const custom = lang === 'cn' ? '自定义 Provider...' : 'Custom provider...';
+  return [
+    { value: 'deepseek_anthropic', label: 'DeepSeek (Anthropic)', base_url: 'https://api.deepseek.com/anthropic', api_format: 'anthropic_messages', api_key_env: 'DEEPSEEK_API_KEY' },
+    { value: 'deepseek_chat', label: 'DeepSeek (Chat Completions)', base_url: 'https://api.deepseek.com', api_format: 'chat_completions', api_key_env: 'DEEPSEEK_API_KEY' },
+    { value: 'glm_anthropic', label: 'GLM / Zhipu (Anthropic)', base_url: 'https://open.bigmodel.cn/api/anthropic', api_format: 'anthropic_messages', api_key_env: 'ZHIPU_API_KEY' },
+    { value: '__custom__', label: custom },
+  ];
+}
+
+async function askBridge(bridges, providers, t, lang) {
   const name = cancel(await p.text({
-    message: 'Bridge name',
-    placeholder: 'e.g. deepseek, codex',
-    validate: v => v.trim() ? undefined : 'Required',
-  }));
+    message: t.bridgeName,
+    placeholder: t.bridgeNamePh,
+    validate: v => v.trim() ? undefined : t.required,
+  }), t);
 
   const baseUrl = cancel(await p.text({
-    message: 'Agent base URL path',
-    placeholder: 'e.g. /deepseek',
-    validate: v => v.startsWith('/') ? undefined : 'Must start with /',
-  }));
+    message: t.agentUrl,
+    placeholder: t.agentUrlPh,
+    validate: v => v.startsWith('/') ? undefined : t.agentUrlRequired,
+  }), t);
 
   const agentFormat = cancel(await p.select({
-    message: 'Client API format',
-    options: API_FORMATS,
-  }));
+    message: t.agentFormat,
+    options: API_FORMATS[lang],
+  }), t);
 
   const providerFormat = PROVIDER_FORMAT_MAP[agentFormat];
-  p.log.info(`Provider format: ${pc.yellow(providerFormat)}`);
+  p.log.info(t.providerFormatInfo(pc.yellow(providerFormat)));
 
   const providerOpts = Object.entries(providers)
     .filter(([, v]) => v.api_format === providerFormat)
@@ -193,38 +322,38 @@ async function askBridge(bridges, providers) {
   let providerName;
   if (providerOpts.length > 0) {
     providerName = cancel(await p.select({
-      message: 'Select provider',
+      message: t.selectBridgeProvider,
       options: providerOpts,
-    }));
+    }), t);
   } else {
-    p.log.warn(`No ${providerFormat} provider found. Add one first.`);
-    await askProvider(providers);
+    p.log.warn(t.noProvider(providerFormat));
+    await askProvider(providers, t, lang);
     providerName = Object.keys(providers).find(k => providers[k].api_format === providerFormat);
   }
 
   // Model mappings
-  p.log.message('Model mappings (client model → provider model):');
+  p.log.message(t.modelMappings);
 
   const models = {};
   while (true) {
     const agentModel = cancel(await p.text({
-      message: 'Client model name',
-      placeholder: 'e.g. claude-sonnet',
-      validate: v => v.trim() ? undefined : 'Required',
-    }));
+      message: t.clientModel,
+      placeholder: t.clientModelPh,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
 
     const providerModel = cancel(await p.text({
-      message: `Provider model name for "${agentModel}"`,
-      placeholder: 'e.g. deepseek-v4-pro',
-      validate: v => v.trim() ? undefined : 'Required',
-    }));
+      message: t.providerModel(agentModel),
+      placeholder: t.providerModelPh,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
 
     models[agentModel] = providerModel;
 
     const addMore = cancel(await p.confirm({
-      message: 'Add another model mapping?',
+      message: t.addModel,
       initialValue: true,
-    }));
+    }), t);
     if (!addMore) break;
   }
 
@@ -234,7 +363,7 @@ async function askBridge(bridges, providers) {
     models,
   };
 
-  p.log.success(`Bridge "${pc.cyan(name)}" configured (${Object.keys(models).join(', ')}).`);
+  p.log.success(t.bridgeDone(pc.cyan(name), Object.keys(models).join(', ')));
 }
 
 function generateToml({ listenAddr, providers, bridges }) {
