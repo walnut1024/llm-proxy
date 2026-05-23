@@ -186,6 +186,7 @@ export default async function init(opts) {
     listenAddr: '127.0.0.1:8787',
     providers: {},
     bridges: {},
+    _returnTo: null,
   };
 
   // State machine: server → provider → bridge → loop → summary
@@ -194,13 +195,15 @@ export default async function init(opts) {
   while (step !== 'done') {
     if (step === 'server') {
       await runServer(state, t);
-      step = 'provider';
+      step = state._returnTo || 'provider';
+      state._returnTo = null;
       continue;
     }
 
     if (step === 'provider') {
       await askProvider(state.providers, t, lang);
-      step = 'bridge';
+      step = state._returnTo || 'bridge';
+      state._returnTo = null;
       continue;
     }
 
@@ -211,13 +214,15 @@ export default async function init(opts) {
         delete state.providers[name];
         await askProvider(state.providers, t, lang, { name, ...existing });
       }
-      step = 'loop';
+      step = state._returnTo || 'loop';
+      state._returnTo = null;
       continue;
     }
 
     if (step === 'bridge') {
       await askBridge(state.bridges, state.providers, t, lang);
-      step = 'loop';
+      step = state._returnTo || 'loop';
+      state._returnTo = null;
       continue;
     }
 
@@ -228,7 +233,8 @@ export default async function init(opts) {
         delete state.bridges[name];
         await askBridge(state.bridges, state.providers, t, lang, { name, ...existing });
       }
-      step = 'loop';
+      step = state._returnTo || 'loop';
+      state._returnTo = null;
       continue;
     }
 
@@ -270,7 +276,10 @@ async function runLoop(state, t, lang) {
     options,
   }), t);
 
-  if (next.startsWith('edit:')) return next.slice(5);
+  if (next.startsWith('edit:')) {
+    state._returnTo = 'loop';
+    return next.slice(5);
+  }
   if (next.startsWith('del_provider:')) {
     const name = next.slice('del_provider:'.length);
     delete state.providers[name];
@@ -331,7 +340,10 @@ async function runSummary(state, t, lang, outputPath) {
   }
 
   // Navigate to edit
-  if (action.startsWith('edit:')) return action.slice(5);
+  if (action.startsWith('edit:')) {
+    state._returnTo = 'summary';
+    return action.slice(5);
+  }
   if (action.startsWith('del_provider:')) {
     const name = action.slice('del_provider:'.length);
     delete state.providers[name];
