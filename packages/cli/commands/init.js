@@ -166,7 +166,7 @@ function cancel(v, t) {
 }
 
 async function confirmStep(t, message, details) {
-  p.note(details, null);
+  p.note(details, '');
   const ok = cancel(await p.select({
     message,
     options: [
