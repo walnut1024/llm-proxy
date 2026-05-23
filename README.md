@@ -29,42 +29,44 @@ LLM 协议转换代理。在不同 LLM API 协议之间做透明转换，让客�
 └──────────┘   └────────────┘   │            │   └────────────┘   └──────────┘
                                 │  protocol  │
 ┌──────────┐   ┌────────────┐   │  convert   │   ┌────────────┐   ┌──────────┐
-│  Codex   │──►│ Responses  │──►│  + model   │──►│    Chat    │──►│  OpenAI  │
-│  TUI     │   │   API      │   │  mapping   │   │ Completion │   │  ...     │
+│  Codex   │──►│ Responses  │──►│  + model   │──►│    Chat    │──►│ DeepSeek │
+│  TUI     │   │   API      │   │  mapping   │   │ Completion │   │  OpenAI  │
 └──────────┘   └────────────┘   └────────────┘   └────────────┘   └──────────┘
 ```
 
 | 转换方向 | 状态 | 说明 |
 |----------|------|------|
 | Anthropic → Anthropic | **已接入** | 直通 + 模型名映射 |
+| Responses → Chat Completions | **已接入** | 请求/响应/流式 SSE 转换，含模型名映射 |
 | Anthropic → Chat Completions | 代码已完成 | 请求/响应/流式 SSE 转换均已实现，待接入管线 |
-| Responses → Chat Completions | **已接入** | 请求/响应/流式 SSE 转换均已实现，含模型名映射 |
-| Responses → Anthropic | 计划中 | 无直接转换代码，可通过 Responses→Chat→Anthropic 链式实现 |
-| Chat Completions → Anthropic | 计划中 | 响应转换代码已有（`chat_to_anthropic`），请求转换待实现 |
-| Chat Completions → Chat Completions | 计划中 | 直通 + 模型名映射，与 Anthropic→Anthropic 对称 |
+| Chat Completions → Chat Completions | **已接入** | 直通 + 模型名映射 |
 
 ## 工作原理
 
+以 Responses → Chat Completions 为例：
+
 ```
-Claude Desktop
-       │
-       │  POST /deepseek/v1/messages
-       │  {"model": "claude-sonnet", ...}
-       ▼
-   llm-proxy
-       │  1. 路由到 bridge "deepseek"
-       │  2. model: claude-sonnet → deepseek-v4-pro[1m]
-       │  3. 注入 Provider API key
-       │  4. 转发到上游
-       ▼
-   DeepSeek API (Anthropic 兼容端点)
-       │  {"model": "deepseek-v4-pro[1m]", ...}
-       │
-       ▼
-   llm-proxy
-       │  model 字段自动还原: deepseek-v4-pro[1m] → claude-sonnet
-       ▼
-   Claude Desktop 收到响应，model 字段是 claude-sonnet
+Codex TUI
+     │
+     │  POST /deepseek/v1/responses
+     │  {"model": "codex-sonnet", "input": "...", "stream": true}
+     ▼
+ llm-proxy
+     │  1. 路由到 bridge "deepseek"
+     │  2. model: codex-sonnet → deepseek-v4-pro
+     │  3. Responses API → Chat Completions 协议转换
+     │  4. 注入 Provider API key (Bearer)
+     ▼
+ DeepSeek API (Chat Completions)
+     │  POST /v1/chat/completions
+     │  {"model": "deepseek-v4-pro", "messages": [...]}
+     │  SSE: {"choices":[{"delta":{"content":"..."}}]}
+     ▼
+ llm-proxy
+     │  1. Chat Completions SSE → Responses API SSE
+     │  2. model: deepseek-v4-pro → codex-sonnet
+     ▼
+ Codex TUI 收到 Responses API 格式的 SSE 流
 ```
 
 核心概念：
@@ -89,6 +91,7 @@ cargo build --release
 [server]
 listen_addr = "127.0.0.1:8787"
 
+# Anthropic 直通 bridge
 [bridges.deepseek.agent]
 base_url = "/deepseek"
 api_format = "anthropic_messages"
@@ -99,11 +102,26 @@ name = "deepseek_anthropic"
 [bridges.deepseek.models]
 "claude-sonnet" = "deepseek-v4-pro[1m]"
 "claude-haiku"  = "deepseek-v4-flash"
-"claude-opus"   = "deepseek-v4-pro[1m]"
 
 [providers.deepseek_anthropic]
 base_url = "https://api.deepseek.com/anthropic"
 api_format = "anthropic_messages"
+api_key_env = "DEEPSEEK_API_KEY"
+
+# Responses → Chat Completions bridge
+[bridges.codex.agent]
+base_url = "/codex"
+api_format = "responses"
+
+[bridges.codex.provider]
+name = "deepseek_chat"
+
+[bridges.codex.models]
+"codex-sonnet" = "deepseek-v4-pro"
+
+[providers.deepseek_chat]
+base_url = "https://api.deepseek.com"
+api_format = "chat_completions"
 api_key_env = "DEEPSEEK_API_KEY"
 ```
 
@@ -118,12 +136,18 @@ cargo run --release -- /path/to/proxy.toml
 
 ### 客户端配置
 
-以 Claude Desktop 为例，编辑 `claude_desktop_config.json`：
+Claude Desktop — 编辑 `claude_desktop_config.json`：
 
 ```json
 {
   "apiUrl": "http://127.0.0.1:8787/deepseek"
 }
+```
+
+Codex TUI — 设置 `OPENAI_BASE_URL`：
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8787/codex
 ```
 
 ## API 端点
@@ -134,6 +158,8 @@ cargo run --release -- /path/to/proxy.toml
 | `/admin/status` | GET | 运行状态（RPS、延迟、错误统计） |
 | `/admin/errors` | GET | 最近错误事件 |
 | `/{bridge}/v1/messages` | POST | Anthropic Messages API 代理 |
+| `/{bridge}/v1/chat/completions` | POST | Chat Completions API 代理 |
+| `/{bridge}/v1/responses` | POST | Responses API 代理 |
 | `/{bridge}/v1/models` | GET | 列出 bridge 支持的模型 |
 | `/v1/models` | GET | 列出所有 bridge 的模型 |
 
@@ -148,42 +174,6 @@ cargo run --release -- /path/to/proxy.toml
 - 响应返回时，`model` 字段自动从 `deepseek-v4-pro[1m]` 还原为 `claude-sonnet`
 - `[...]` 后缀智能匹配：`deepseek-v4-pro[1m]` 和 `deepseek-v4-pro` 都能被还原
 - 未在映射表中的模型名会被拒绝
-
-## 多 Bridge
-
-同时配置多个 bridge，每个连接不同的 Provider：
-
-```toml
-[bridges.deepseek.agent]
-base_url = "/deepseek"
-api_format = "anthropic_messages"
-
-[bridges.deepseek.provider]
-name = "deepseek_anthropic"
-
-[bridges.deepseek.models]
-"claude-sonnet" = "deepseek-v4-pro[1m]"
-
-[bridges.zhipu.agent]
-base_url = "/zhipu"
-api_format = "anthropic_messages"
-
-[bridges.zhipu.provider]
-name = "zhipu_anthropic"
-
-[bridges.zhipu.models]
-"claude-sonnet" = "glm-5.1"
-
-[providers.deepseek_anthropic]
-base_url = "https://api.deepseek.com/anthropic"
-api_format = "anthropic_messages"
-api_key_env = "DEEPSEEK_API_KEY"
-
-[providers.zhipu_anthropic]
-base_url = "https://open.bigmodel.cn/api/anthropic"
-api_format = "anthropic_messages"
-api_key_env = "ZHIPU_API_KEY"
-```
 
 ## 认证
 

@@ -446,3 +446,202 @@ async fn chat_completion_stream_handler(
     ]);
     Sse::new(stream)
 }
+
+// --- Chat Completions → Chat Completions passthrough tests ---
+
+#[tokio::test]
+async fn chat_passthrough_maps_request_and_restores_response() {
+    let port = next_port();
+    std::env::set_var("VENDOR_PROXY_TEST_KEY", "provider-secret");
+
+    let mock_app = Router::new()
+        .route("/v1/chat/completions", post(chat_passthrough_response_handler))
+        .with_state(MockState { expected_key: "provider-secret".to_string() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let mock_handle = tokio::spawn(async {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+
+    let proxy_addr = start_chat_passthrough_proxy(&upstream_addr.to_string(), port).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{}/chat/v1/chat/completions", proxy_addr))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": "my-gpt4",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 64,
+            "stream": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], "my-gpt4");
+    assert_eq!(body["choices"][0]["message"]["content"], "Hi from chat!");
+
+    std::env::remove_var("VENDOR_PROXY_TEST_KEY");
+    mock_handle.abort();
+}
+
+#[tokio::test]
+async fn chat_passthrough_rejects_unconfigured_model() {
+    let port = next_port();
+    std::env::set_var("VENDOR_PROXY_TEST_KEY", "provider-secret");
+
+    let proxy_addr = start_chat_passthrough_proxy("127.0.0.1:9", port).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("http://{}/chat/v1/chat/completions", proxy_addr))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": "unknown-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "unknown_model");
+
+    std::env::remove_var("VENDOR_PROXY_TEST_KEY");
+}
+
+#[tokio::test]
+async fn chat_passthrough_streaming() {
+    let port = next_port();
+    std::env::set_var("VENDOR_PROXY_TEST_KEY", "provider-secret");
+
+    let mock_app = Router::new()
+        .route("/v1/chat/completions", post(chat_passthrough_stream_handler))
+        .with_state(MockState { expected_key: "provider-secret".to_string() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let mock_handle = tokio::spawn(async {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+
+    let proxy_addr = start_chat_passthrough_proxy(&upstream_addr.to_string(), port).await;
+    let client = reqwest::Client::new();
+    let body = client
+        .post(format!("http://{}/chat/v1/chat/completions", proxy_addr))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": "my-gpt4",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(body.contains(r#""model":"my-gpt4""#), "{}", body);
+    assert!(body.contains(r#""content":"Hi""#), "{}", body);
+
+    std::env::remove_var("VENDOR_PROXY_TEST_KEY");
+    mock_handle.abort();
+}
+
+async fn start_chat_passthrough_proxy(upstream_addr: &str, port: u16) -> std::net::SocketAddr {
+    let config_content = format!(
+        "[server]\nlisten_addr = \"127.0.0.1:{}\"\n\n[bridges.chat.agent]\nbase_url = \"/chat\"\napi_format = \"chat_completions\"\n\n[bridges.chat.provider]\nname = \"test\"\n\n[bridges.chat.models]\n\"my-gpt4\" = \"provider-chat-model\"\n\n[providers.test]\nbase_url = \"http://{}\"\napi_format = \"chat_completions\"\napi_key_env = \"VENDOR_PROXY_TEST_KEY\"\n",
+        port, upstream_addr
+    );
+
+    let cfg = llm_proxy::config::ProxyConfig::from_toml_str(&config_content).unwrap();
+    let state = Arc::new(llm_proxy::server::AppState {
+        config: cfg,
+        client: llm_proxy::client::HttpClient::new(),
+        started_at: std::time::Instant::now(),
+        request_count: AtomicU64::new(0),
+        error_count: AtomicU64::new(0),
+        active_connections: AtomicI64::new(0),
+        latency_total_ns: AtomicU64::new(0),
+        request_times: Mutex::new(VecDeque::new()),
+        provider_stats: Arc::new(RwLock::new(HashMap::new())),
+        error_events: Mutex::new(VecDeque::new()),
+    });
+    let proxy_app = Router::new()
+        .route("/chat/v1/chat/completions", post(llm_proxy::server::bridge_handler))
+        .route("/chat/v1/models", axum::routing::get(llm_proxy::server::bridge_models_handler))
+        .with_state(state);
+    let proxy_listener =
+        tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy_app).await.unwrap();
+    });
+    proxy_addr
+}
+
+async fn chat_passthrough_response_handler(
+    State(_state): State<MockState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    assert_eq!(
+        headers.get("Authorization").and_then(|v| v.to_str().ok()),
+        Some("Bearer provider-secret")
+    );
+    assert_eq!(body["model"], "provider-chat-model");
+
+    Json(serde_json::json!({
+        "id": "chat-456",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "provider-chat-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hi from chat!"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+    }))
+}
+
+async fn chat_passthrough_stream_handler(
+    State(_state): State<MockState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    assert_eq!(
+        headers.get("Authorization").and_then(|v| v.to_str().ok()),
+        Some("Bearer provider-secret")
+    );
+    assert_eq!(body["model"], "provider-chat-model");
+
+    let stream = futures_util::stream::iter(vec![
+        Ok::<_, std::convert::Infallible>(
+            Event::default().data(
+                serde_json::json!({
+                    "id": "chat-s1",
+                    "object": "chat.completion.chunk",
+                    "created": 1700000000,
+                    "model": "provider-chat-model",
+                    "choices": [{"index": 0, "delta": {"content": "Hi"}, "finish_reason": null}]
+                }).to_string(),
+            ),
+        ),
+        Ok(Event::default().data(
+            serde_json::json!({
+                "id": "chat-s1",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": "provider-chat-model",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+            }).to_string(),
+        )),
+        Ok(Event::default().data("[DONE]")),
+    ]);
+    Sse::new(stream)
+}

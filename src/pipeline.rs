@@ -62,8 +62,9 @@ pub async fn execute_bridge(
     body: &str,
 ) -> Result<Response, PipelineError> {
     match (&bridge.agent.api_format, &provider.api_format) {
-        (ApiFormat::AnthropicMessages, ApiFormat::AnthropicMessages) => {
-            anthropic_passthrough(client, log_ctx, bridge_name, bridge, provider, body).await
+        (ApiFormat::AnthropicMessages, ApiFormat::AnthropicMessages)
+        | (ApiFormat::ChatCompletions, ApiFormat::ChatCompletions) => {
+            format_passthrough(client, log_ctx, bridge_name, bridge, provider, body).await
         }
         (ApiFormat::Responses, ApiFormat::ChatCompletions) => {
             responses_to_chat_bridge(client, log_ctx, bridge_name, bridge, provider, body).await
@@ -245,7 +246,7 @@ fn response_json(value: Value) -> Response {
         .into_response()
 }
 
-async fn anthropic_passthrough(
+async fn format_passthrough(
     client: &HttpClient,
     log_ctx: &RequestLogContext,
     bridge_name: &str,
@@ -267,7 +268,7 @@ async fn anthropic_passthrough(
         .map_err(|e| PipelineError::BadRequest(format!("invalid JSON: {}", e)))?;
     let (agent_model, provider_model) = map_json_model(log_ctx, bridge_name, bridge, &mut request)?;
     let stream = request.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let url = format!("{}/v1/messages", provider.base_url.trim_end_matches('/'));
+    let url = format!("{}{}", provider.base_url.trim_end_matches('/'), provider.api_format.endpoint_path());
     let key = provider_key(provider);
     let auth = provider_auth(&provider.api_format, key.as_deref());
     tracing::info!(
