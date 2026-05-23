@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::os::unix::io::AsRawFd;
 use std::sync::{atomic::AtomicI64, Arc, Mutex};
 use std::time::Instant;
 use llm_proxy::client;
@@ -23,15 +22,12 @@ fn acquire_pid_lock() -> std::fs::File {
         .truncate(false)
         .open(&path)
         .unwrap_or_else(|e| panic!("open pid file {}: {}", path.display(), e));
-    let fd = file.as_raw_fd();
-    let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
+    if fs4::fs_std::FileExt::try_lock_exclusive(&file).is_err() {
         let existing_pid = std::fs::read_to_string(&path).unwrap_or_default();
         panic!(
-            "Another proxy instance is running (pid: {}) — lock {}: {}",
+            "Another proxy instance is running (pid: {}) — lock {}",
             existing_pid.trim(),
             path.display(),
-            std::io::Error::last_os_error()
         );
     }
     file.set_len(0).ok();
