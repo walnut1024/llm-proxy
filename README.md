@@ -43,30 +43,14 @@ LLM 协议转换代理。在不同 LLM API 协议之间做透明转换，让客�
 
 ## 工作原理
 
-以 Responses → Chat Completions 为例：
-
 ```
-Codex TUI
-     │
-     │  POST /deepseek/v1/responses
-     │  {"model": "codex-sonnet", "input": "...", "stream": true}
-     ▼
- llm-proxy
-     │  1. 路由到 bridge "deepseek"
-     │  2. model: codex-sonnet → deepseek-v4-pro
-     │  3. Responses API → Chat Completions 协议转换
-     │  4. 注入 Provider API key (Bearer)
-     ▼
- DeepSeek API (Chat Completions)
-     │  POST /v1/chat/completions
-     │  {"model": "deepseek-v4-pro", "messages": [...]}
-     │  SSE: {"choices":[{"delta":{"content":"..."}}]}
-     ▼
- llm-proxy
-     │  1. Chat Completions SSE → Responses API SSE
-     │  2. model: deepseek-v4-pro → codex-sonnet
-     ▼
- Codex TUI 收到 Responses API 格式的 SSE 流
+  ① client request ──► ② llm-proxy ──► ③ forward to provider
+     model: codex-sonnet    map + convert   model: deepseek-v4
+     format: Responses      inject key      format: Chat
+                             │
+  ⑥ client response ◄── ⑤ llm-proxy ◄── ④ provider response
+     model: codex-sonnet    restore         model: deepseek-v4
+     format: Responses      convert back    format: Chat
 ```
 
 核心概念：
