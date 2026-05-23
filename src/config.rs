@@ -152,6 +152,7 @@ fn validate_format_pair(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match (agent, provider) {
         (ApiFormat::AnthropicMessages, ApiFormat::AnthropicMessages) => Ok(()),
+        (ApiFormat::Responses, ApiFormat::ChatCompletions) => Ok(()),
         _ => Err(format!(
             "bridge '{}': unsupported format pair {:?} -> {:?}",
             bridge_name, agent, provider

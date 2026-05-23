@@ -15,6 +15,7 @@ use crate::client::{HttpClient, ProxyError};
 use crate::config::{ApiFormat, BridgeConfig, ProviderConfig};
 use crate::logging::{request_body_summary, RequestLogContext};
 use crate::model::{restore_model_fields, restore_model_in_sse_data, ModelPolicy, UnknownModel};
+use crate::stream::chat_sse::ChatSseToResponsesTranslator;
 use crate::stream::parser::{SseLine, SseParser};
 
 #[derive(Debug, thiserror::Error)]
@@ -64,10 +65,128 @@ pub async fn execute_bridge(
         (ApiFormat::AnthropicMessages, ApiFormat::AnthropicMessages) => {
             anthropic_passthrough(client, log_ctx, bridge_name, bridge, provider, body).await
         }
+        (ApiFormat::Responses, ApiFormat::ChatCompletions) => {
+            responses_to_chat_bridge(client, log_ctx, bridge_name, bridge, provider, body).await
+        }
         _ => Err(PipelineError::Internal(format!(
             "unsupported format pair {:?} -> {:?}",
             bridge.agent.api_format, provider.api_format
         ))),
+    }
+}
+
+async fn responses_to_chat_bridge(
+    client: &HttpClient,
+    log_ctx: &RequestLogContext,
+    bridge_name: &str,
+    bridge: &BridgeConfig,
+    provider: &ProviderConfig,
+    body: &str,
+) -> Result<Response, PipelineError> {
+    let started_at = Instant::now();
+
+    let mut request: crate::types::responses::ResponsesRequest = serde_json::from_str(body)
+        .map_err(|e| PipelineError::BadRequest(format!("invalid JSON: {}", e)))?;
+
+    let agent_model = request.model.clone();
+    let provider_model =
+        ModelPolicy::new(bridge_name, &bridge.models).resolve_provider_model(&agent_model)?.to_string();
+    request.model = provider_model.clone();
+    let stream = request.stream;
+
+    tracing::info!(
+        request_id = log_ctx.request_id,
+        bridge = %log_ctx.bridge,
+        agent_base_url = %log_ctx.agent_base_url,
+        provider = %log_ctx.provider,
+        agent_model = %agent_model,
+        provider_model = %provider_model,
+        stream,
+        "model map"
+    );
+
+    let chat_request = crate::bridge::responses_to_chat::responses_to_chat(&request);
+    let url = format!("{}/v1/chat/completions", provider.base_url.trim_end_matches('/'));
+    let key = provider_key(provider);
+    let auth = provider_auth(&provider.api_format, key.as_deref());
+
+    tracing::info!(
+        request_id = log_ctx.request_id,
+        bridge = %log_ctx.bridge,
+        provider = %log_ctx.provider,
+        agent_model = %agent_model,
+        provider_model = %provider_model,
+        stream,
+        url = %url,
+        has_api_key = key.is_some(),
+        "upstream request"
+    );
+
+    if stream {
+        let rx =
+            client.post_streaming_with_headers_logged(&url, &auth, &chat_request, Some(log_ctx)).await?;
+        let log_ctx = log_ctx.clone();
+        let stream = async_stream::stream! {
+            let mut translator = ChatSseToResponsesTranslator::new(Some(&request));
+            let mut rx = rx;
+            let mut data_count = 0usize;
+            while let Some(line) = rx.recv().await {
+                data_count += 1;
+                let events = translator.feed(&line);
+                for event_line in events {
+                    let data = event_line.strip_prefix("data: ").unwrap_or(&event_line);
+                    let (restored, _) =
+                        restore_model_in_sse_data(data, &provider_model, &agent_model);
+                    yield Ok::<_, std::convert::Infallible>(Event::default().data(restored));
+                }
+            }
+            {
+                let events = translator.feed("[DONE]");
+                for event_line in events {
+                    let data = event_line.strip_prefix("data: ").unwrap_or(&event_line);
+                    let (restored, _) =
+                        restore_model_in_sse_data(data, &provider_model, &agent_model);
+                    yield Ok::<_, std::convert::Infallible>(Event::default().data(restored));
+                }
+            }
+            tracing::info!(
+                request_id = log_ctx.request_id,
+                bridge = %log_ctx.bridge,
+                provider = %log_ctx.provider,
+                agent_model = %agent_model,
+                provider_model = %provider_model,
+                stream,
+                data = data_count,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "upstream SSE done"
+            );
+        };
+        Ok(Sse::new(stream).into_response())
+    } else {
+        let chat_response: crate::types::chat::ChatCompletionResponse =
+            client.post_json_with_headers_logged(&url, &auth, &chat_request, Some(log_ctx)).await?;
+
+        let response = crate::bridge::chat_to_responses::chat_to_responses(
+            &chat_response,
+            Some(&request),
+        );
+        let mut response_value = serde_json::to_value(response)
+            .map_err(|e| PipelineError::Internal(format!("serialize error: {}", e)))?;
+        let restored = restore_model_fields(&mut response_value, &provider_model, &agent_model);
+
+        tracing::info!(
+            request_id = log_ctx.request_id,
+            bridge = %log_ctx.bridge,
+            provider = %log_ctx.provider,
+            agent_model = %agent_model,
+            provider_model = %provider_model,
+            stream,
+            restored_fields = restored,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "non-stream response restored"
+        );
+
+        Ok(response_json(response_value))
     }
 }
 

@@ -13,7 +13,7 @@ fn current_timezone_offset() -> String {
 }
 
 fn acquire_pid_lock() -> std::fs::File {
-    let dir = std::env::temp_dir().join("yeek");
+    let dir = std::env::temp_dir().join("llm-proxy");
     std::fs::create_dir_all(&dir).expect("create pid dir");
     let path = dir.join(PID_FILE);
     let mut file = std::fs::OpenOptions::new()
