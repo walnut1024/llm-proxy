@@ -1,2 +1,4 @@
 /target
-cli/node_modules
+packages/core/target
+packages/cli/node_modules
+proxy.log

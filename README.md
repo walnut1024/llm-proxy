@@ -64,12 +64,19 @@ LLM 协议转换代理。在不同 LLM API 协议之间做透明转换，让客�
 ### 构建
 
 ```bash
-cargo build --release
+cd packages/core && cargo build --release
 ```
 
 ### 配置
 
-创建 `proxy.toml`：
+交互式生成配置：
+
+```bash
+cd packages/cli && npm install
+node bin.js init
+```
+
+或手动创建 `proxy.toml`：
 
 ```toml
 [server]
@@ -113,9 +120,16 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx
-cargo run --release
-# 或指定配置文件
-cargo run --release -- /path/to/proxy.toml
+
+# CLI 方式（推荐）
+cd packages/cli
+node bin.js start                # 守护进程模式
+node bin.js start -f             # 前台模式（调试用）
+node bin.js status               # 查看状态
+node bin.js stop                 # 停止
+
+# 或直接运行 binary
+cd packages/core && cargo run --release -- /path/to/proxy.toml
 ```
 
 ### 客户端配置

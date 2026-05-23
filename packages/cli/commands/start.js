@@ -74,9 +74,9 @@ function startDaemon(binaryPath, configPath) {
 }
 
 function findBinary() {
-  // 1. Adjacent to cli/: ../target/release/llm-proxy
+  // 1. Adjacent: ../core/target/release/llm-proxy
   const cliDir = path.dirname(import.meta.dirname || new URL('.', import.meta.url).pathname);
-  const localBuild = path.resolve(cliDir, '..', 'target', 'release', 'llm-proxy');
+  const localBuild = path.resolve(cliDir, '..', 'core', 'target', 'release', 'llm-proxy');
   if (fs.existsSync(localBuild)) return localBuild;
 
   // 2. In PATH
