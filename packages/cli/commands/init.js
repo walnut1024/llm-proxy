@@ -64,6 +64,11 @@ const i18n = {
     deleted: (n) => `"${n}" deleted.`,
     navCancel: 'Cancel',
     navHint: 'You can go back and edit any section at any time.',
+    confirmServer: 'Confirm listen address?',
+    confirmProvider: (n) => `Confirm provider "${n}"?`,
+    confirmBridge: (n) => `Confirm bridge "${n}"?`,
+    confirmOk: 'Yes, continue',
+    confirmRedo: 'No, redo',
   },
   cn: {
     langLabel: '中文',
@@ -125,6 +130,11 @@ const i18n = {
     deleted: (n) => `"${n}" 已删除。`,
     navCancel: '取消',
     navHint: '随时可以在菜单中回退修改任意配置项。',
+    confirmServer: '确认监听地址？',
+    confirmProvider: (n) => `确认 Provider "${n}"？`,
+    confirmBridge: (n) => `确认 Bridge "${n}"？`,
+    confirmOk: '确认，继续',
+    confirmRedo: '重做',
   },
 };
 
@@ -153,6 +163,18 @@ function cancel(v, t) {
     process.exit(0);
   }
   return v;
+}
+
+async function confirmStep(t, message, details) {
+  p.note(details, null);
+  const ok = cancel(await p.select({
+    message,
+    options: [
+      { value: true, label: t.confirmOk },
+      { value: false, label: t.confirmRedo },
+    ],
+  }), t);
+  return ok;
 }
 
 export default async function init(opts) {
@@ -254,11 +276,16 @@ export default async function init(opts) {
 // ── Step: server ──────────────────────────────────────────────
 
 async function runServer(state, t) {
-  state.listenAddr = cancel(await p.text({
-    message: t.listenAddr,
-    initialValue: state.listenAddr,
-    validate: v => v.trim() ? undefined : t.required,
-  }), t);
+  while (true) {
+    state.listenAddr = cancel(await p.text({
+      message: t.listenAddr,
+      initialValue: state.listenAddr,
+      validate: v => v.trim() ? undefined : t.required,
+    }), t);
+
+    const ok = await confirmStep(t, t.confirmServer, state.listenAddr);
+    if (ok) break;
+  }
 }
 
 // ── Step: loop (next step menu with back navigation) ─────────
@@ -389,146 +416,172 @@ function getProviderPresets(lang) {
 }
 
 async function askProvider(providers, t, lang, existing = null) {
-  const presets = getProviderPresets(lang);
+  while (true) {
+    const presets = getProviderPresets(lang);
 
-  const choice = cancel(await p.select({
-    message: t.selectProvider,
-    options: presets,
-    initialValue: existing ? presets.findIndex(p => p.value === existing.name) : undefined,
-  }), t);
-
-  let name, config;
-
-  if (choice === '__custom__') {
-    name = cancel(await p.text({
-      message: t.providerName,
-      placeholder: t.providerNamePh,
-      initialValue: existing && !presets.find(p => p.value === existing.name) ? existing.name : undefined,
-      validate: v => v.trim() ? undefined : t.required,
+    const choice = cancel(await p.select({
+      message: t.selectProvider,
+      options: presets,
+      initialValue: existing ? presets.findIndex(p => p.value === existing.name) : undefined,
     }), t);
 
-    const baseUrl = cancel(await p.text({
-      message: t.providerUrl,
-      placeholder: t.providerUrlPh,
-      initialValue: existing ? existing.base_url : undefined,
-      validate: v => v.startsWith('http') ? undefined : t.urlRequired,
-    }), t);
+    let name, config;
 
-    const apiFormat = cancel(await p.select({
-      message: t.providerFormat,
-      options: API_FORMATS[lang],
-      initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.api_format) : undefined,
-    }), t);
+    if (choice === '__custom__') {
+      name = cancel(await p.text({
+        message: t.providerName,
+        placeholder: t.providerNamePh,
+        initialValue: existing && !presets.find(p => p.value === existing.name) ? existing.name : undefined,
+        validate: v => v.trim() ? undefined : t.required,
+      }), t);
 
-    const apiKeyEnv = cancel(await p.text({
-      message: t.apiKeyEnv,
-      placeholder: t.apiKeyEnvPh,
-      initialValue: existing ? existing.api_key_env : undefined,
-      validate: v => v.trim() ? undefined : t.required,
-    }), t);
+      const baseUrl = cancel(await p.text({
+        message: t.providerUrl,
+        placeholder: t.providerUrlPh,
+        initialValue: existing ? existing.base_url : undefined,
+        validate: v => v.startsWith('http') ? undefined : t.urlRequired,
+      }), t);
 
-    config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
-  } else {
-    const preset = presets.find(p => p.value === choice);
-    name = choice;
-    config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
+      const apiFormat = cancel(await p.select({
+        message: t.providerFormat,
+        options: API_FORMATS[lang],
+        initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.api_format) : undefined,
+      }), t);
+
+      const apiKeyEnv = cancel(await p.text({
+        message: t.apiKeyEnv,
+        placeholder: t.apiKeyEnvPh,
+        initialValue: existing ? existing.api_key_env : undefined,
+        validate: v => v.trim() ? undefined : t.required,
+      }), t);
+
+      config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
+    } else {
+      const preset = presets.find(p => p.value === choice);
+      name = choice;
+      config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
+    }
+
+    if (providers[name] && name !== existing?.name) {
+      p.log.warn(t.providerExists(name));
+      return;
+    }
+
+    const details = [
+      `${pc.bold('URL:')}    ${config.base_url}`,
+      `${pc.bold('Format:')} ${config.api_format}`,
+      `${pc.bold('Key:')}    ${config.api_key_env}`,
+    ].join('\n');
+
+    const ok = await confirmStep(t, t.confirmProvider(pc.cyan(name)), details);
+    if (ok) {
+      providers[name] = config;
+      p.log.success(t.providerDone(pc.cyan(name)));
+      return;
+    }
+    existing = { name, ...config };
   }
-
-  if (providers[name] && name !== existing?.name) {
-    p.log.warn(t.providerExists(name));
-    return;
-  }
-
-  providers[name] = config;
-  p.log.success(t.providerDone(pc.cyan(name)));
 }
 
 // ── Bridge ────────────────────────────────────────────────────
 
 async function askBridge(bridges, providers, t, lang, existing = null) {
-  const name = cancel(await p.text({
-    message: t.bridgeName,
-    placeholder: t.bridgeNamePh,
-    initialValue: existing ? existing.name : undefined,
-    validate: v => v.trim() ? undefined : t.required,
-  }), t);
-
-  const baseUrl = cancel(await p.text({
-    message: t.agentUrl,
-    placeholder: t.agentUrlPh,
-    initialValue: existing ? existing.agent.base_url : undefined,
-    validate: v => v.startsWith('/') ? undefined : t.agentUrlRequired,
-  }), t);
-
-  const agentFormat = cancel(await p.select({
-    message: t.agentFormat,
-    options: API_FORMATS[lang],
-    initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.agent.api_format) : undefined,
-  }), t);
-
-  const providerFormat = PROVIDER_FORMAT_MAP[agentFormat];
-  p.log.info(t.providerFormatInfo(pc.yellow(providerFormat)));
-
-  const providerOpts = Object.entries(providers)
-    .filter(([, v]) => v.api_format === providerFormat)
-    .map(([k]) => ({ value: k, label: k }));
-
-  let providerName;
-  if (providerOpts.length > 0) {
-    providerName = cancel(await p.select({
-      message: t.selectBridgeProvider,
-      options: providerOpts,
-      initialValue: existing ? providerOpts.findIndex(o => o.value === existing.provider.name) : undefined,
-    }), t);
-  } else {
-    p.log.warn(t.noProvider(providerFormat));
-    await askProvider(providers, t, lang);
-    providerName = Object.keys(providers).find(k => providers[k].api_format === providerFormat);
-  }
-
-  // Model mappings
-  p.log.message(t.modelMappings);
-
-  const models = existing ? { ...existing.models } : {};
-  if (Object.keys(models).length > 0) {
-    const keepModels = cancel(await p.confirm({
-      message: `Keep existing ${Object.keys(models).length} model mapping(s)?`,
-      initialValue: true,
-    }), t);
-    if (!keepModels) {
-      Object.keys(models).forEach(k => delete models[k]);
-    }
-  }
-
   while (true) {
-    const agentModel = cancel(await p.text({
-      message: t.clientModel,
-      placeholder: t.clientModelPh,
+    const name = cancel(await p.text({
+      message: t.bridgeName,
+      placeholder: t.bridgeNamePh,
+      initialValue: existing ? existing.name : undefined,
       validate: v => v.trim() ? undefined : t.required,
     }), t);
 
-    const providerModel = cancel(await p.text({
-      message: t.providerModel(agentModel),
-      placeholder: t.providerModelPh,
-      validate: v => v.trim() ? undefined : t.required,
+    const baseUrl = cancel(await p.text({
+      message: t.agentUrl,
+      placeholder: t.agentUrlPh,
+      initialValue: existing ? existing.agent.base_url : undefined,
+      validate: v => v.startsWith('/') ? undefined : t.agentUrlRequired,
     }), t);
 
-    models[agentModel] = providerModel;
-
-    const addMore = cancel(await p.confirm({
-      message: t.addModel,
-      initialValue: true,
+    const agentFormat = cancel(await p.select({
+      message: t.agentFormat,
+      options: API_FORMATS[lang],
+      initialValue: existing ? API_FORMATS[lang].findIndex(f => f.value === existing.agent.api_format) : undefined,
     }), t);
-    if (!addMore) break;
+
+    const providerFormat = PROVIDER_FORMAT_MAP[agentFormat];
+    p.log.info(t.providerFormatInfo(pc.yellow(providerFormat)));
+
+    const providerOpts = Object.entries(providers)
+      .filter(([, v]) => v.api_format === providerFormat)
+      .map(([k]) => ({ value: k, label: k }));
+
+    let providerName;
+    if (providerOpts.length > 0) {
+      providerName = cancel(await p.select({
+        message: t.selectBridgeProvider,
+        options: providerOpts,
+        initialValue: existing ? providerOpts.findIndex(o => o.value === existing.provider.name) : undefined,
+      }), t);
+    } else {
+      p.log.warn(t.noProvider(providerFormat));
+      await askProvider(providers, t, lang);
+      providerName = Object.keys(providers).find(k => providers[k].api_format === providerFormat);
+    }
+
+    // Model mappings
+    p.log.message(t.modelMappings);
+
+    const models = existing ? { ...existing.models } : {};
+    if (Object.keys(models).length > 0) {
+      const keepModels = cancel(await p.confirm({
+        message: `Keep existing ${Object.keys(models).length} model mapping(s)?`,
+        initialValue: true,
+      }), t);
+      if (!keepModels) {
+        Object.keys(models).forEach(k => delete models[k]);
+      }
+    }
+
+    while (true) {
+      const agentModel = cancel(await p.text({
+        message: t.clientModel,
+        placeholder: t.clientModelPh,
+        validate: v => v.trim() ? undefined : t.required,
+      }), t);
+
+      const providerModel = cancel(await p.text({
+        message: t.providerModel(agentModel),
+        placeholder: t.providerModelPh,
+        validate: v => v.trim() ? undefined : t.required,
+      }), t);
+
+      models[agentModel] = providerModel;
+
+      const addMore = cancel(await p.confirm({
+        message: t.addModel,
+        initialValue: true,
+      }), t);
+      if (!addMore) break;
+    }
+
+    const details = [
+      `${pc.bold('URL:')}      ${baseUrl}`,
+      `${pc.bold('Format:')}   ${agentFormat}`,
+      `${pc.bold('Provider:')} ${providerName}`,
+      `${pc.bold('Models:')}   ${Object.entries(models).map(([k, v]) => `${k} → ${v}`).join(', ')}`,
+    ].join('\n');
+
+    const ok = await confirmStep(t, t.confirmBridge(pc.cyan(name)), details);
+    if (ok) {
+      bridges[name] = {
+        agent: { base_url: baseUrl, api_format: agentFormat },
+        provider: { name: providerName },
+        models,
+      };
+      p.log.success(t.bridgeDone(pc.cyan(name), Object.keys(models).join(', ')));
+      return;
+    }
+    existing = { name, agent: { base_url: baseUrl, api_format: agentFormat }, provider: { name: providerName }, models };
   }
-
-  bridges[name] = {
-    agent: { base_url: baseUrl, api_format: agentFormat },
-    provider: { name: providerName },
-    models,
-  };
-
-  p.log.success(t.bridgeDone(pc.cyan(name), Object.keys(models).join(', ')));
 }
 
 // ── TOML generation ───────────────────────────────────────────
