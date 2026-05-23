@@ -110,36 +110,58 @@ export default async function init(opts) {
   p.outro(`Run ${pc.cyan('llm-proxy start')} to start the proxy.`);
 }
 
+const PROVIDER_PRESETS = [
+  { value: 'deepseek_anthropic', label: 'DeepSeek (Anthropic)', base_url: 'https://api.deepseek.com/anthropic', api_format: 'anthropic_messages', api_key_env: 'DEEPSEEK_API_KEY' },
+  { value: 'deepseek_chat', label: 'DeepSeek (Chat Completions)', base_url: 'https://api.deepseek.com', api_format: 'chat_completions', api_key_env: 'DEEPSEEK_API_KEY' },
+  { value: 'glm_anthropic', label: 'GLM / Zhipu (Anthropic)', base_url: 'https://open.bigmodel.cn/api/anthropic', api_format: 'anthropic_messages', api_key_env: 'ZHIPU_API_KEY' },
+  { value: '__custom__', label: 'Custom provider...' },
+];
+
 async function askProvider(providers) {
-  const name = cancel(await p.text({
-    message: 'Provider name',
-    placeholder: 'e.g. deepseek_anthropic',
-    validate: v => v.trim() ? undefined : 'Required',
+  const choice = cancel(await p.select({
+    message: 'Select provider',
+    options: PROVIDER_PRESETS,
   }));
+
+  let name, config;
+
+  if (choice === '__custom__') {
+    name = cancel(await p.text({
+      message: 'Provider name',
+      placeholder: 'e.g. my_provider',
+      validate: v => v.trim() ? undefined : 'Required',
+    }));
+
+    const baseUrl = cancel(await p.text({
+      message: 'Provider base URL',
+      placeholder: 'e.g. https://api.example.com/v1',
+      validate: v => v.startsWith('http') ? undefined : 'Must start with http(s)://',
+    }));
+
+    const apiFormat = cancel(await p.select({
+      message: 'Provider API format',
+      options: API_FORMATS,
+    }));
+
+    const apiKeyEnv = cancel(await p.text({
+      message: 'API key environment variable',
+      placeholder: 'e.g. MY_API_KEY',
+      validate: v => v.trim() ? undefined : 'Required',
+    }));
+
+    config = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
+  } else {
+    const preset = PROVIDER_PRESETS.find(p => p.value === choice);
+    name = choice;
+    config = { base_url: preset.base_url, api_format: preset.api_format, api_key_env: preset.api_key_env };
+  }
 
   if (providers[name]) {
     p.log.warn(`Provider "${name}" already exists, skipping.`);
     return;
   }
 
-  const baseUrl = cancel(await p.text({
-    message: 'Provider base URL',
-    placeholder: 'e.g. https://api.deepseek.com/anthropic',
-    validate: v => v.startsWith('http') ? undefined : 'Must start with http(s)://',
-  }));
-
-  const apiFormat = cancel(await p.select({
-    message: 'Provider API format',
-    options: API_FORMATS,
-  }));
-
-  const apiKeyEnv = cancel(await p.text({
-    message: 'API key environment variable',
-    placeholder: 'e.g. DEEPSEEK_API_KEY',
-    validate: v => v.trim() ? undefined : 'Required',
-  }));
-
-  providers[name] = { base_url: baseUrl, api_format: apiFormat, api_key_env: apiKeyEnv };
+  providers[name] = config;
   p.log.success(`Provider "${pc.cyan(name)}" configured.`);
 }
 
