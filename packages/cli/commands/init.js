@@ -63,6 +63,7 @@ const i18n = {
     deleteBridge: 'Delete bridge',
     deleted: (n) => `"${n}" deleted.`,
     navCancel: 'Cancel',
+    navHint: 'You can go back and edit any section at any time.',
   },
   cn: {
     langLabel: '中文',
@@ -123,6 +124,7 @@ const i18n = {
     deleteBridge: '删除 Bridge',
     deleted: (n) => `"${n}" 已删除。`,
     navCancel: '取消',
+    navHint: '随时可以在菜单中回退修改任意配置项。',
   },
 };
 
@@ -178,6 +180,7 @@ export default async function init(opts) {
   }
 
   p.intro(pc.bgCyan(pc.black(t.banner)));
+  p.log.info(pc.dim(t.navHint));
 
   const state = {
     listenAddr: '127.0.0.1:8787',
@@ -230,6 +233,7 @@ export default async function init(opts) {
     }
 
     if (step === 'loop') {
+      p.log.info(pc.dim(t.navHint));
       step = await runLoop(state, t, lang);
       continue;
     }
